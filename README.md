@@ -4,6 +4,18 @@ Enhanced agent skill for **creating, improving, and packaging** Cursor / Claude 
 
 **Voice:** Standards enforcer — quality and packaging, not creative writing.
 
+## Install via skills.sh CLI
+
+```bash
+npx skills add SPRIC76/sc2
+```
+
+**Badge snippet:**
+
+```markdown
+[![skills.sh](https://skills.sh/b/SPRIC76/sc2)](https://skills.sh/SPRIC76/sc2)
+```
+
 ## What SC2 adds
 
 SC2 supplements the base skill-creator workflow with:
