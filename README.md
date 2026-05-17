@@ -24,6 +24,22 @@ SC2 supplements the base skill-creator workflow with:
 
 Copy this entire folder. Pair with Cursor's built-in **create-skill** guidance for the full authoring workflow; SC2 is the stricter **packaging overlay**.
 
+## Install (Claude Desktop)
+
+### Method A: Drag-and-drop
+
+1. Package the `sc2/` folder as `sc2.skill`.
+2. Drag `sc2.skill` into Claude Desktop.
+3. Confirm SC2 appears in your installed skills.
+
+### Method B: Manual folder install
+
+1. Find your Claude skills directory in app settings/docs.
+2. Copy the `sc2/` folder into that location.
+3. Restart Claude Desktop to reload skills.
+
+If your environment uses managed paths (for example `/mnt/skills/user/`), copy `sc2/` there.
+
 ## Usage
 
 ```bash
@@ -54,6 +70,14 @@ Both are zip archives with `my-skill/SKILL.md` as the root entry.
 | **Claude Code / agent** | Extract `.zip` to your agent skills directory |
 
 The SKILL.md references Claude paths like `/mnt/skills/user/` for Claude-hosted environments. On Cursor, use the paths above.
+
+## Other IDEs and agents
+
+SC2 can be used anywhere an agent runtime supports folder-based skill instructions:
+
+- Import/copy the `sc2/` folder as a skill package.
+- Ensure the runtime can execute `scripts/package_dual.py` (Python 3.10+ recommended).
+- If the IDE has no skill system, you can still run the packager manually from a terminal.
 
 ## Pre-package checklist
 
