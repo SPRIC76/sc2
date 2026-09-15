@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""
+Skill validator — the base skill-creator's upload rules plus sc2's standards.
+validate_skill.py v1.0 | 2026-09-15
+
+Errors are what claude.ai or the Skills API would reject, or what leaves the
+skill broken: frontmatter keys and limits, a name that differs from its folder,
+angle brackets in the description, a body over 500 lines, a referenced file that
+does not exist, a bundled Python script that does not compile.
+
+Warnings are what makes a skill trigger badly or age badly: no "when to use" cue
+in the description (the description is all a model sees when it picks a skill),
+trigger phrases kept in the body instead, files nothing points to, long
+references without a contents list, and paths from sandboxes that no longer
+exist (/mnt/skills, /home/claude) or tool names only one surface has.
+
+Usage:
+    python validate_skill.py <skill-folder> [<skill-folder> ...] [--strict]
+
+Exit 0 when no errors (and, with --strict, no warnings); 1 otherwise.
+Needs only the standard library; uses PyYAML for the frontmatter when present.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+ALLOWED_KEYS = {"name", "description", "license", "allowed-tools", "metadata", "compatibility"}
+JUNK_DIRS = {"__pycache__", "node_modules", ".pytest_cache"}
+JUNK_FILES = {".DS_Store", "Thumbs.db"}
+ROOT_SKIP_DIRS = {"evals", "tests"}
+BUNDLE_DIRS = ("references", "scripts", "assets")
+REF_PATTERN = re.compile(r"(?<![\w/.-])((?:references|scripts|assets)/[\w.\-/]*[\w])")
+WHEN_CUE = re.compile(r"\b(use (this skill )?(when|whenever|for|to)|trigger|apply when|invoke when)\b", re.I)
+STALE_MARKERS = {
+    "/mnt/skills": "a claude.ai sandbox path that other surfaces do not have",
+    "/mnt/user-data": "a claude.ai sandbox path that other surfaces do not have",
+    "/home/claude": "a claude.ai sandbox path that other surfaces do not have",
+    "str_replace": "a tool name only some surfaces use; say 'edit in place'",
+}
+# One person's profile folder: breaks on every other machine and discloses the
+# account name wherever the skill is shared. Placeholders such as <you> pass.
+USER_PATH = re.compile(r"(?:[A-Za-z]:\\{1,2}Users\\{1,2}|/Users/|/home/)"
+                       r"(?!(?:claude|Public|Default|All Users)\b)([A-Za-z0-9._-]+)")
+
+
+def _parse_frontmatter(text):
+    """Return (dict, body_text) or raise ValueError."""
+    if not text.startswith("---"):
+        raise ValueError("No YAML frontmatter found")
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n?(.*)$", text, re.S)
+    if not m:
+        raise ValueError("Invalid frontmatter format")
+    raw, body = m.group(1), m.group(2)
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            raise ValueError("Frontmatter must be a YAML mapping")
+        return data, body
+    except ImportError:
+        return _mini_yaml(raw), body
+
+
+def _mini_yaml(raw):
+    """Enough YAML for skill frontmatter: scalars, > and | blocks, one nested map."""
+    data, lines, i = {}, raw.splitlines(), 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        m = re.match(r"^([A-Za-z0-9_-]+):\s*(.*)$", line)
+        if not m:
+            raise ValueError(f"Unparseable frontmatter line: {line!r}")
+        key, val = m.group(1), m.group(2).strip()
+        i += 1
+        if val in (">", ">-", "|", "|-", ""):
+            block = []
+            while i < len(lines) and (lines[i].startswith((" ", "\t")) or not lines[i].strip()):
+                block.append(lines[i])
+                i += 1
+            if val == "" and block and all(re.match(r"^\s+[A-Za-z0-9_-]+:", b) or not b.strip() for b in block):
+                data[key] = {bm.group(1): bm.group(2).strip().strip("'\"")
+                             for b in block if (bm := re.match(r"^\s+([A-Za-z0-9_-]+):\s*(.*)$", b))}
+            elif val.startswith("|"):
+                data[key] = "\n".join(b.strip() for b in block).strip()
+            else:
+                data[key] = " ".join(b.strip() for b in block if b.strip())
+        else:
+            data[key] = val.strip("'\"")
+    return data
+
+
+def check(skill_dir):
+    """Return (errors, warnings) for one skill folder."""
+    skill = Path(skill_dir)
+    errors, warnings = [], []
+    md = skill / "SKILL.md"
+    if not md.is_file():
+        return [f"{skill}: SKILL.md not found"], []
+
+    nested = [p for p in skill.rglob("SKILL.md")
+              if p != md and not (set(p.relative_to(skill).parts[:-1]) & JUNK_DIRS)
+              and p.relative_to(skill).parts[0] not in ROOT_SKIP_DIRS]
+    if nested:
+        errors.append("more than one SKILL.md (claude.ai accepts exactly one): "
+                      + ", ".join(str(p.relative_to(skill)) for p in nested))
+
+    text = md.read_text(encoding="utf-8")
+    try:
+        fm, body = _parse_frontmatter(text)
+    except ValueError as e:
+        return [str(e)], []
+
+    extra = set(fm) - ALLOWED_KEYS
+    if extra:
+        errors.append(f"frontmatter keys not allowed: {', '.join(sorted(extra))}")
+
+    name = str(fm.get("name", "")).strip()
+    if not name:
+        errors.append("frontmatter has no name")
+    else:
+        if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name) or len(name) > 64:
+            errors.append(f"name '{name}' must be kebab-case, at most 64 characters")
+        if name != skill.name:
+            errors.append(f"name '{name}' differs from its folder '{skill.name}'; agents load by name")
+
+    desc = fm.get("description")
+    if not isinstance(desc, str) or not desc.strip():
+        errors.append("frontmatter has no description")
+        desc = ""
+    desc = desc.strip()
+    if "<" in desc or ">" in desc:
+        errors.append("description contains angle brackets (< or >), which upload rejects")
+    if len(desc) > 1024:
+        errors.append(f"description is {len(desc)} characters; the limit is 1024")
+    if desc and not WHEN_CUE.search(desc):
+        warnings.append("description says what the skill is but not when to use it; "
+                        "the description is the only text a model sees when choosing a skill")
+    comp = fm.get("compatibility")
+    if comp and len(str(comp)) > 500:
+        errors.append("compatibility is over 500 characters")
+
+    body_lines = body.count("\n") + 1
+    if body_lines > 500:
+        errors.append(f"SKILL.md body is {body_lines} lines; keep it under 500 and move depth to references/")
+    if re.search(r"^\s*TRIGGER\b", body, re.M):
+        warnings.append("trigger phrases sit in the body; move them into the description, "
+                        "which is what decides whether the skill loads")
+
+    texts = {md: text}
+    for d in BUNDLE_DIRS:
+        for p in (skill / d).rglob("*") if (skill / d).is_dir() else []:
+            if p.is_file() and p.suffix.lower() in {".md", ".txt", ".py", ".json", ".sh", ".ps1", ".yaml", ".yml"}:
+                if set(p.relative_to(skill).parts) & JUNK_DIRS:
+                    continue
+                texts[p] = p.read_text(encoding="utf-8", errors="replace")
+
+    for src, t in texts.items():
+        for ref in sorted(set(REF_PATTERN.findall(t))):
+            if not (skill / ref).exists() and not (src.parent / ref).exists():
+                errors.append(f"{src.relative_to(skill)} references {ref}, which does not exist")
+
+    bundled = [p for d in BUNDLE_DIRS if (skill / d).is_dir() for p in (skill / d).rglob("*")
+               if p.is_file() and not (set(p.relative_to(skill).parts) & JUNK_DIRS)]
+    everything = "\n".join(texts.values())
+    for p in bundled:
+        rel = p.relative_to(skill).as_posix()
+        if rel not in everything and p.name not in everything:
+            warnings.append(f"{rel} is not mentioned by SKILL.md or any other file (orphan)")
+        if p.suffix == ".md" and p.read_text(encoding="utf-8", errors="replace").count("\n") > 300:
+            head = p.read_text(encoding="utf-8", errors="replace")[:1500].lower()
+            if "contents" not in head:
+                warnings.append(f"{rel} is over 300 lines with no contents list")
+        if p.suffix == ".py":
+            try:
+                compile(p.read_text(encoding="utf-8"), str(p), "exec")
+            except SyntaxError as e:
+                errors.append(f"{rel} does not compile: {e}")
+
+    for p in skill.rglob("*"):
+        rel_parts = p.relative_to(skill).parts
+        if rel_parts and rel_parts[0] in ROOT_SKIP_DIRS:
+            continue
+        if (p.is_dir() and p.name in JUNK_DIRS) or (p.is_file() and (p.name in JUNK_FILES or p.suffix == ".pyc")):
+            if not (set(rel_parts[:-1]) & JUNK_DIRS):
+                warnings.append(f"junk in the skill folder: {p.relative_to(skill).as_posix()}")
+
+    for src, t in texts.items():
+        if src.name == "validate_skill.py":
+            continue
+        for marker, why in STALE_MARKERS.items():
+            if marker in t:
+                warnings.append(f"{src.relative_to(skill).as_posix()} mentions {marker}: {why}")
+        for user in sorted(set(USER_PATH.findall(t))):
+            warnings.append(f"{src.relative_to(skill).as_posix()} names the user folder '{user}': a path from one "
+                            "person's machine breaks on others and discloses the account name; use ~ or a placeholder")
+
+    return errors, warnings
+
+
+def main(argv):
+    strict = "--strict" in argv
+    folders = [a for a in argv if a != "--strict"]
+    if not folders:
+        print(__doc__)
+        return 1
+    bad = False
+    for f in folders:
+        errors, warnings = check(f)
+        print(f"{Path(f).name}: {len(errors)} error(s), {len(warnings)} warning(s)")
+        for e in errors:
+            print(f"  ERROR  {e}")
+        for w in warnings:
+            print(f"  WARN   {w}")
+        bad = bad or bool(errors) or (strict and bool(warnings))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+    sys.exit(main(sys.argv[1:]))

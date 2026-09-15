@@ -1,100 +1,83 @@
 ---
 name: sc2
 description: >
-  Enhanced skill creator with mandatory dual-packaging (.skill + .zip),
-  validation, and comprehensive reference material. Piggybacks the base Anthropic
-  skill-creator with stricter output standards. Use when creating, improving,
-  or packaging skills. ALWAYS produces both .skill (interface-loadable) and
-  versioned .zip (manual deployment). Enforces documentation completeness
-  and user-friendly reference material in every skill.
+  Skill Creator 2: the packaging and quality standard for Agent Skills, layered
+  on Anthropic's skill-creator. Use whenever a skill is created, edited,
+  recalibrated, validated, packaged, uploaded to claude.ai, or deployed to a
+  local skills folder such as ~/.agents/skills - including "package this
+  skill", "make a .skill file", "check my skill", "why isn't my skill
+  triggering", "upgrade my skills", or before handing any skill to someone.
+  Validates against the upload rules plus stricter checks (name equals folder,
+  triggers in the description, every referenced file exists, no stale sandbox
+  paths), then always produces both a .skill and a versioned .zip.
+metadata:
+  version: "1.1"
+  updated: "2026-09-15"
 ---
 
-# Skill Creator — Packaging & Quality Standards
+# Skill Creator 2 — Packaging & Quality Standards
 
-This skill supplements the base `skill-creator` (in `/mnt/skills/examples/`).
-Read base SKILL.md first for full workflow, then apply these standards on top.
+This skill supplements Anthropic's `skill-creator` wherever it is installed (claude.ai, the Claude desktop app, a Claude Code plugin, or the `anthropics/skills` repository). Use skill-creator for the workflow — capture intent, draft, test prompts, evals, description optimization — and apply these standards on top. Without skill-creator, the standards below still stand on their own.
 
-## Mandatory Packaging Standard
-
-**Every skill output MUST include both formats:**
-
-| Format | Purpose | Naming |
-|--------|---------|--------|
-| `.skill` | Direct interface loading (drag-and-drop) | `{name}.skill` |
-| `.zip` | Manual download/deployment to `/mnt/skills/user/` | `{name}-v{X.Y}.zip` |
-
-Both are zip archives with `{skillname}/SKILL.md` as root entry.
-The `.skill` file has no version in filename (always current).
-The `.zip` includes version for archive/deployment clarity.
-
-### Packaging Procedure
-
-**ALWAYS use `scripts/package_dual.py`** instead of the base `package_skill.py`:
+## 1. Validate before anything ships
 
 ```bash
-scripts/package_dual.py <path/to/skill-folder> --version <X.Y> [--output <dir>]
+python scripts/validate_skill.py <skill-folder> [--strict]
 ```
 
-This produces both files in one command. If the script is unavailable,
-package manually:
+| Level | Means | Checks |
+|-------|-------|--------|
+| **Error** | Upload would be rejected, or the skill is broken | Frontmatter keys other than name, description, license, allowed-tools, metadata, compatibility · name not kebab-case, over 64 characters, or different from its folder · description missing, over 1024 characters, or containing angle brackets · body over 500 lines · a referenced `references/`, `scripts/` or `assets/` path that does not exist · a bundled Python script that does not compile · more than one SKILL.md |
+| **Warning** | The skill will trigger badly or age badly | No "when to use" cue in the description · trigger phrases kept in the body · files nothing points to · references over 300 lines without a contents list · junk files · sandbox paths from one surface, paths from a former user account, tool names only one surface has |
+
+**Why the description carries the most weight:** it is the only text a model sees when deciding whether to load a skill. Trigger phrases written in the body are invisible at that moment. Put every "when to use" in the description, and make it a little pushy, as skill-creator advises — models tend to under-trigger skills.
+
+## 2. Package: always both formats
 
 ```bash
-cd <parent-of-skill-folder>
-zip -r <output>/skillname.skill skillname/
-cp <output>/skillname.skill <output>/skillname-vX.Y.zip
+python scripts/package_dual.py <skill-folder> --version <X.Y> [--output <dir>] [--deploy <skills-home>]
 ```
 
-**Present BOTH files to the user.** Never present only one format.
+| File | For | Name |
+|------|-----|------|
+| `.skill` | claude.ai and the Claude desktop app: upload in skill settings, or open the file card an agent presents | `{name}.skill` — no version, always current |
+| `.zip` | Keeping, and local agents: extract so the folder lands at `~/.agents/skills/{name}/` | `{name}-v{X.Y}.zip` |
 
-### Pre-Package Checklist
+Both are zip archives with `{name}/SKILL.md` at the root. The packager validates first and stops on any error. It leaves out `evals/` and `tests/` at the skill root, `*-workspace` folders, `__pycache__`, `node_modules`, `.git`, `.pyc` and OS junk.
 
-Before packaging, verify:
+`--deploy <skills-home>` also replaces the contents of `<skills-home>/{name}/` with exactly what was packaged. The folder itself stays, so junctions or symlinks agents use to reach it keep working. It refuses to write through a link, or over a folder whose SKILL.md names a different skill.
 
-| Check | Requirement |
-|-------|------------|
-| SKILL.md frontmatter | `name` (kebab-case) + `description` (with triggers) |
-| SKILL.md body | < 500 lines, progressive disclosure to references |
-| References | All referenced files exist, concise, user-friendly |
-| Scripts | All referenced scripts exist, documented, runnable |
-| No orphans | Every file referenced from SKILL.md or another file |
-| No junk | No `__pycache__`, `.pyc`, `.DS_Store`, `node_modules` |
+**Present both files** when a file-delivery tool exists (`present_files`, `SendUserFile`). Without one, say where both files are.
 
-### Documentation Completeness
+## 3. Documentation completeness
 
-Every skill MUST have:
+Every skill has:
 
-1. **SKILL.md** — Core instructions, triggers, workflow, anti-patterns
-2. **references/** — Any supporting docs referenced from SKILL.md
-   - Each reference file must justify its existence (not duplicating SKILL.md)
-   - Concise and scannable (tables over prose, imperative form)
-   - Include version/date header
-3. **scripts/** (if applicable) — Executable code with docstrings
+1. **SKILL.md** — what it does and when (in the description), workflow, anti-patterns
+2. **references/** — supporting docs SKILL.md points to, each saying when to read it
+   - Justifies its existence (does not repeat SKILL.md)
+   - Scannable: tables over prose, imperative form
+   - Version and date in its header
+3. **scripts/** (if any) — executable, with a docstring saying what it does, what it returns, and what it will never do
 
-**User-friendly standard:** A new user reading only SKILL.md should understand
-what the skill does, when it triggers, and how to use it. References provide
-depth, not prerequisites.
+**User-friendly standard:** someone reading only SKILL.md understands what the skill does, when it triggers, and how to use it. References add depth, never prerequisites.
 
-### Version Tracking
+## 4. Version tracking
 
-Every skill file set should note:
-- Skill version in archive filename
-- Creation date in SKILL.md or references
-- Former names/versions in footnote if renamed
+- `metadata.version` and `metadata.updated` in the frontmatter, and the version in the `.zip` name
+- Former names and versions in a closing footnote when renamed or recalibrated
+
+## 5. Updating an existing skill
+
+- **Keep the name and folder** — agents and accounts know the skill by them.
+- **Snapshot before editing.** The snapshot is the baseline every change is measured against.
+- **Scripts get tests, and the test fails first.** Keep tests outside the skill folder so packaged and deployed copies stay identical to the development copy.
+- **Name every older copy.** A skill often lives in several places at once: the development folder, a local skills home, one or more claude.ai accounts, a public repository, project folders. After packaging, list each place still holding the old version and who can refresh it. claude.ai copies change only when someone uploads the new `.skill`.
+
+## Integration with skill-creator
+
+Replace skill-creator's single `.skill` in **Package and Present** with dual packaging, and run the validator wherever skill-creator validates. Every other step — interview, research, writing guide, test cases, evals, description optimization, blind comparison — is unchanged.
 
 ---
 
-## Integration with Base Skill-Creator
-
-This overlay modifies these base workflow steps:
-
-**"Package and Present" (line ~340):** Replace single `.skill` output with
-dual packaging. Always present both files via `present_files`.
-
-**"Final Report" (line ~555):** After copying best skill back, run dual
-packaging. Present both `.skill` and `.zip` to user.
-
-**"Immediate Feedback Loop":** When showing early outputs, still use
-dual packaging if presenting a testable skill.
-
-All other base workflow steps (interview, research, init, writing guide,
-eval, improve, benchmark) remain unchanged.
+*⁰ Formerly: skill-creator-plus → skill-creator-2 → sc2 v1.0 (2026-02-10) → sc2 v1.1 (2026-09-15: validator, deploy, every surface named instead of one sandbox).*
